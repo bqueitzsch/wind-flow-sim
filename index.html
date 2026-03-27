@@ -577,7 +577,24 @@ function stampSolidTop() {
     stampRect(b.x, b.y, b.w, b.d);
     if (b.wing) stampRect(b.wing.x, b.wing.y, b.wing.w, b.wing.d);
   }
-  // Trees are visual only — they don't block the fluid grid
+
+  // Clear road zones — guarantee streets are always passable even if buildings overlap them.
+  // This fixes the mismatch where bRect() clips the visual but stampRect doesn't know about roads.
+  const roadHW = 0.018;
+  for (const sx of activeStreets.v) {
+    const ci = Math.round(sx * NX);
+    const hw = Math.max(1, Math.ceil(roadHW * NX));
+    for (let i = ci - hw; i <= ci + hw; i++)
+      for (let j = 1; j <= NY; j++)
+        if (i >= 1 && i <= NX) solid[I(i,j)] = 0;
+  }
+  for (const sy of activeStreets.h) {
+    const cj = Math.round(sy * NY);
+    const hw = Math.max(1, Math.ceil(roadHW * NY));
+    for (let j = cj - hw; j <= cj + hw; j++)
+      for (let i = 1; i <= NX; i++)
+        if (j >= 1 && j <= NY) solid[I(i,j)] = 0;
+  }
 }
 
 // ==============================================================
