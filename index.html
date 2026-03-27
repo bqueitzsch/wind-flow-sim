@@ -1,0 +1,1713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wind Flow Simulator — Drone Operations</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d0d0f; color: #f0f0f2;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden; height: 100vh; display: flex; flex-direction: column;
+  }
+  #header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; background: #141418; border-bottom: 1px solid #2a2a32;
+    flex-shrink: 0; flex-wrap: wrap; gap: 8px;
+  }
+  #header h1 { font-size: 18px; font-weight: 600; color: #e85a1e; }
+  .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .control-group { display: flex; align-items: center; gap: 6px; }
+  .control-group label { font-size: 11px; color: #a0a0a8; text-transform: uppercase; letter-spacing: 0.5px; }
+  .control-group input[type="range"] { width: 90px; accent-color: #e85a1e; }
+  .control-group span.value { font-size: 12px; color: #c8c8cc; min-width: 32px; }
+  button {
+    background: #1a1a1f; color: #f0f0f2; border: 1px solid #2a2a32;
+    padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #222228; }
+  button.active { background: #e85a1e; border-color: #e85a1e; }
+  #canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+  canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #legend {
+    position: absolute; bottom: 14px; right: 14px;
+    background: rgba(20,20,24,0.92); border: 1px solid #2a2a32;
+    border-radius: 8px; padding: 10px 14px; font-size: 11px; z-index: 10;
+  }
+  #legend .bar {
+    width: 150px; height: 12px; border-radius: 3px; margin: 5px 0;
+    background: linear-gradient(to right, rgb(30,80,200), rgb(30,190,220), rgb(100,220,100), rgb(240,200,50), rgb(240,80,20));
+  }
+  #legend .labels { display: flex; justify-content: space-between; color: #a0a0a8; font-size: 10px; }
+  #info {
+    position: absolute; bottom: 14px; left: 14px;
+    background: rgba(20,20,24,0.92); border: 1px solid #2a2a32;
+    border-radius: 8px; padding: 10px 14px; font-size: 11px;
+    color: #a0a0a8; max-width: 300px; line-height: 1.45; z-index: 10;
+  }
+  #info strong { color: #e85a1e; }
+  .scene-group { display: flex; gap: 5px; }
+  .btn-group { display: flex; gap: 5px; }
+  #status {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    color: #e85a1e; font-size: 16px; z-index: 20; display: none;
+  }
+  .compass-wrap { position: relative; width: 28px; height: 28px; }
+  .compass-wrap canvas { width: 28px; height: 28px; position: static; }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>Wind Flow Simulator</h1>
+  <div class="controls">
+    <div class="btn-group">
+      <button class="active" id="btnSide">Side View</button>
+      <button id="btnTop">Top-Down</button>
+    </div>
+    <div class="control-group">
+      <label>Wind</label>
+      <input type="range" id="windSpeed" min="2" max="25" value="12" step="1">
+      <span class="value" id="windVal">12</span>
+    </div>
+    <div class="control-group" id="dirControl">
+      <label>Direction</label>
+      <input type="range" id="windDir" min="0" max="345" value="0" step="15">
+      <div class="compass-wrap"><canvas id="compassCanvas" width="28" height="28"></canvas></div>
+      <span class="value" id="dirVal">0°</span>
+    </div>
+    <div class="control-group" id="sideWindToggle" style="display:none;">
+      <button id="btnWindDir" style="padding:4px 12px;border-radius:4px;border:1px solid #444;background:#232328;color:#f0f0f2;cursor:pointer;font-size:12px;">Wind →</button>
+    </div>
+    <div class="control-group">
+      <label>Trails</label>
+      <input type="range" id="fadeRate" min="1" max="20" value="8" step="1">
+    </div>
+    <div id="side-scenes" class="scene-group">
+      <button class="active" data-scene="mixed">Mixed Roofs</button>
+      <button data-scene="flat">Flat Roofs</button>
+      <button data-scene="pitched">Pitched Roofs</button>
+      <button data-scene="tall">Tall Building</button>
+      <button data-scene="canyon">Street Canyon</button>
+    </div>
+    <div id="top-scenes" class="scene-group" style="display:none;">
+      <button class="active" data-scene="downtown">Downtown</button>
+      <button data-scene="midrise">Midrise</button>
+      <button data-scene="suburban">Suburban</button>
+      <button data-scene="industrial">Industrial</button>
+      <button data-scene="campus">Campus</button>
+    </div>
+    <button id="resetBtn">Reset</button>
+  </div>
+</div>
+<div id="canvas-wrap">
+  <canvas id="trails"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="status">Initializing flow...</div>
+  <div id="legend">
+    <div style="color:#c8c8cc; margin-bottom:3px;">Wind Speed</div>
+    <div class="bar"></div>
+    <div class="labels"><span>Calm</span><span>Moderate</span><span>Strong</span></div>
+  </div>
+  <div id="info"></div>
+</div>
+
+<script>
+// ============================================================
+//  Real-time Navier-Stokes "Stable Fluids" solver
+//  Semi-Lagrangian advection + pressure projection
+//  Vorticity confinement for crisp vortex structures
+// ============================================================
+
+const trailCanvas = document.getElementById('trails');
+const tCtx = trailCanvas.getContext('2d');
+const olCanvas = document.getElementById('overlay');
+const oCtx = olCanvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const infoEl = document.getElementById('info');
+
+let viewMode = 'side';
+
+// --- Grid ---
+let NX, NY, CELL, SIZE;
+function sizeCanvases() {
+  const w = trailCanvas.parentElement.clientWidth;
+  const h = trailCanvas.parentElement.clientHeight;
+  trailCanvas.width = w; trailCanvas.height = h;
+  olCanvas.width = w; olCanvas.height = h;
+  NX = Math.min(140, Math.floor(w / 7));
+  CELL = w / NX;
+  NY = Math.ceil(h / CELL);
+  STRIDE = NX + 2;
+  SIZE = STRIDE * (NY + 2);
+}
+sizeCanvases();
+
+// --- Fields ---
+let solid;
+let u, v;         // velocity
+let u0, v0;       // workspace (previous step)
+let p, div_f;     // pressure, divergence
+let omega_f;      // vorticity (for confinement)
+
+function allocFields() {
+  solid   = new Uint8Array(SIZE);
+  u  = new Float32Array(SIZE); v  = new Float32Array(SIZE);
+  u0 = new Float32Array(SIZE); v0 = new Float32Array(SIZE);
+  p  = new Float32Array(SIZE); div_f = new Float32Array(SIZE);
+  omega_f = new Float32Array(SIZE);
+}
+
+var STRIDE = 0; // = NX + 2, cached for hot loop performance
+function I(i, j) { return j * STRIDE + i; }
+
+// --- Wind ---
+let windDirDeg = 0;
+function getWindDirRad() { return windDirDeg * Math.PI / 180; }
+
+// Wind velocity in cells per timestep
+function getWindVelocity() {
+  return parseFloat(document.getElementById('windSpeed').value) / 12;
+}
+
+function getWindDirLabel() {
+  const dirs = ['→ E', '↘ SE', '↓ S', '↙ SW', '← W', '↖ NW', '↑ N', '↗ NE'];
+  return dirs[Math.round(windDirDeg / 45) % 8];
+}
+
+function drawCompass() {
+  const c = document.getElementById('compassCanvas');
+  const ctx = c.getContext('2d');
+  const cx = 14, cy = 14, r = 11;
+  ctx.clearRect(0, 0, 28, 28);
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = '#2a2a32'; ctx.lineWidth = 1; ctx.stroke();
+  const theta = getWindDirRad();
+  const ax = cx + Math.cos(theta) * r * 0.85;
+  const ay = cy + Math.sin(theta) * r * 0.85;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(ax, ay);
+  ctx.strokeStyle = '#e85a1e'; ctx.lineWidth = 2; ctx.stroke();
+  const hl = 4, ha1 = theta + Math.PI * 0.78, ha2 = theta - Math.PI * 0.78;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay); ctx.lineTo(ax + Math.cos(ha1)*hl, ay + Math.sin(ha1)*hl);
+  ctx.moveTo(ax, ay); ctx.lineTo(ax + Math.cos(ha2)*hl, ay + Math.sin(ha2)*hl);
+  ctx.stroke();
+  ctx.font = '7px sans-serif'; ctx.fillStyle = '#606068'; ctx.textAlign = 'center';
+  ctx.fillText('N', cx, 6);
+}
+
+// --- Side-view boundary-layer profile (cells/timestep) ---
+function uProfileSide(j) {
+  const gj = NY;
+  const h = gj - j;
+  if (h <= 0) return 0;
+  const z0 = 1.5, zRef = NY * 0.75;
+  const prof = Math.log(Math.max(1, h) / z0) / Math.log(zRef / z0);
+  return Math.max(0, Math.min(1.0, prof)) * getWindVelocity();
+}
+
+// ==========================
+// SCENE DEFINITIONS
+// ==========================
+const sideScenes = {
+  mixed: [
+    { x: 0.06, w: 0.10, h: 0.28, roof: 'flat' },
+    { x: 0.22, w: 0.12, h: 0.42, roof: 'pitched', pitch: 0.09 },
+    { x: 0.42, w: 0.09, h: 0.22, roof: 'flat' },
+    { x: 0.57, w: 0.13, h: 0.50, roof: 'pitched', pitch: 0.11 },
+    { x: 0.78, w: 0.09, h: 0.32, roof: 'flat' },
+  ],
+  flat: [
+    { x: 0.05, w: 0.11, h: 0.24, roof: 'flat' },
+    { x: 0.22, w: 0.14, h: 0.42, roof: 'flat' },
+    { x: 0.44, w: 0.10, h: 0.30, roof: 'flat' },
+    { x: 0.62, w: 0.10, h: 0.52, roof: 'flat' },
+    { x: 0.80, w: 0.09, h: 0.20, roof: 'flat' },
+  ],
+  pitched: [
+    { x: 0.06, w: 0.12, h: 0.30, roof: 'pitched', pitch: 0.10 },
+    { x: 0.24, w: 0.13, h: 0.40, roof: 'pitched', pitch: 0.13 },
+    { x: 0.46, w: 0.10, h: 0.26, roof: 'pitched', pitch: 0.09 },
+    { x: 0.64, w: 0.13, h: 0.48, roof: 'pitched', pitch: 0.12 },
+  ],
+  tall: [
+    { x: 0.08, w: 0.09, h: 0.20, roof: 'flat' },
+    { x: 0.26, w: 0.11, h: 0.68, roof: 'flat' },
+    { x: 0.48, w: 0.09, h: 0.22, roof: 'pitched', pitch: 0.07 },
+    { x: 0.68, w: 0.10, h: 0.30, roof: 'flat' },
+  ],
+  canyon: [
+    { x: 0.06, w: 0.12, h: 0.44, roof: 'flat' },
+    { x: 0.24, w: 0.12, h: 0.46, roof: 'flat' },
+    { x: 0.42, w: 0.12, h: 0.40, roof: 'flat' },
+    { x: 0.60, w: 0.12, h: 0.48, roof: 'flat' },
+    { x: 0.78, w: 0.12, h: 0.42, roof: 'flat' },
+  ],
+};
+
+// Top-down scenes: proper city blocks like a real map
+// Buildings fill blocks defined by a street grid. Multiple buildings per block.
+// Street grid is defined first, then buildings placed within the blocks.
+
+const topScenes = {
+  downtown: [
+    // Dense high-rises, tight grid, tall towers filling blocks
+    // Block A (top-left)
+    { x: 0.03, y: 0.03, w: 0.07, d: 0.09, tall: 0.7 },
+    { x: 0.11, y: 0.03, w: 0.06, d: 0.09, tall: 0.55 },
+    // Block B
+    { x: 0.22, y: 0.03, w: 0.05, d: 0.05, tall: 0.9 },  // tall slim tower
+    { x: 0.28, y: 0.03, w: 0.08, d: 0.09, tall: 0.6,
+      wing: { x: 0.28, y: 0.09, w: 0.04, d: 0.04 } },
+    // Block C — big tower block
+    { x: 0.42, y: 0.03, w: 0.10, d: 0.10, tall: 1.0 },
+    { x: 0.53, y: 0.04, w: 0.05, d: 0.08, tall: 0.65 },
+    // Block D
+    { x: 0.64, y: 0.03, w: 0.12, d: 0.06, tall: 0.5 },
+    { x: 0.64, y: 0.10, w: 0.06, d: 0.04, tall: 0.45 },
+    { x: 0.78, y: 0.03, w: 0.05, d: 0.11, tall: 0.75 },
+    // Row 2
+    { x: 0.03, y: 0.20, w: 0.06, d: 0.12, tall: 0.6 },
+    { x: 0.10, y: 0.20, w: 0.07, d: 0.06, tall: 0.5 },
+    { x: 0.10, y: 0.27, w: 0.05, d: 0.05, tall: 0.4 },
+    { x: 0.22, y: 0.18, w: 0.14, d: 0.06, tall: 0.55 },
+    { x: 0.22, y: 0.25, w: 0.07, d: 0.07, tall: 0.7 },
+    { x: 0.30, y: 0.25, w: 0.06, d: 0.07, tall: 0.45 },
+    { x: 0.42, y: 0.18, w: 0.08, d: 0.07, tall: 0.6 },
+    { x: 0.51, y: 0.18, w: 0.07, d: 0.14, tall: 0.8 },
+    { x: 0.64, y: 0.20, w: 0.10, d: 0.05, tall: 0.5 },
+    { x: 0.64, y: 0.26, w: 0.05, d: 0.06, tall: 0.65 },
+    { x: 0.78, y: 0.20, w: 0.06, d: 0.12, tall: 0.55 },
+    // Row 3
+    { x: 0.03, y: 0.42, w: 0.08, d: 0.08, tall: 0.5 },
+    { x: 0.12, y: 0.42, w: 0.05, d: 0.10, tall: 0.6 },
+    { x: 0.22, y: 0.42, w: 0.06, d: 0.05, tall: 0.8 },  // tower
+    { x: 0.29, y: 0.42, w: 0.07, d: 0.10, tall: 0.45 },
+    { x: 0.42, y: 0.40, w: 0.10, d: 0.06, tall: 0.55 },
+    { x: 0.42, y: 0.47, w: 0.06, d: 0.05, tall: 0.4 },
+    { x: 0.53, y: 0.42, w: 0.05, d: 0.10, tall: 0.7 },
+    { x: 0.64, y: 0.42, w: 0.12, d: 0.10, tall: 0.6,
+      wing: { x: 0.72, y: 0.48, w: 0.04, d: 0.06 } },
+    { x: 0.78, y: 0.42, w: 0.06, d: 0.05, tall: 0.5 },
+    // Row 4
+    { x: 0.03, y: 0.60, w: 0.14, d: 0.06, tall: 0.45 },
+    { x: 0.03, y: 0.67, w: 0.06, d: 0.06, tall: 0.35 },
+    { x: 0.22, y: 0.58, w: 0.06, d: 0.08, tall: 0.6 },
+    { x: 0.29, y: 0.60, w: 0.07, d: 0.06, tall: 0.5 },
+    { x: 0.42, y: 0.58, w: 0.08, d: 0.08, tall: 0.7 },
+    { x: 0.51, y: 0.60, w: 0.07, d: 0.06, tall: 0.45 },
+    { x: 0.64, y: 0.60, w: 0.06, d: 0.10, tall: 0.55 },
+    { x: 0.71, y: 0.60, w: 0.05, d: 0.05, tall: 0.8 },  // another tower
+    { x: 0.78, y: 0.58, w: 0.06, d: 0.08, tall: 0.5 },
+  ],
+  midrise: [
+    // Mixed-use midrise — 4-8 story buildings, organized blocks with alleys
+    // Block row 1
+    { x: 0.04, y: 0.04, w: 0.10, d: 0.08, tall: 0.3 },
+    { x: 0.04, y: 0.13, w: 0.06, d: 0.10, tall: 0.35 },
+    { x: 0.11, y: 0.13, w: 0.06, d: 0.05, tall: 0.2 },
+    { x: 0.24, y: 0.04, w: 0.12, d: 0.10, tall: 0.4,
+      wing: { x: 0.24, y: 0.14, w: 0.05, d: 0.06 } },
+    { x: 0.30, y: 0.14, w: 0.06, d: 0.06, tall: 0.25 },
+    { x: 0.44, y: 0.04, w: 0.08, d: 0.06, tall: 0.35 },
+    { x: 0.44, y: 0.11, w: 0.12, d: 0.09, tall: 0.3 },
+    { x: 0.64, y: 0.04, w: 0.14, d: 0.07, tall: 0.3 },
+    { x: 0.64, y: 0.12, w: 0.06, d: 0.08, tall: 0.35 },
+    { x: 0.72, y: 0.12, w: 0.08, d: 0.08, tall: 0.25 },
+    // Block row 2
+    { x: 0.04, y: 0.32, w: 0.08, d: 0.10, tall: 0.3 },
+    { x: 0.13, y: 0.32, w: 0.06, d: 0.06, tall: 0.25 },
+    { x: 0.04, y: 0.44, w: 0.10, d: 0.06, tall: 0.2 },
+    { x: 0.24, y: 0.32, w: 0.06, d: 0.06, tall: 0.35 },
+    { x: 0.31, y: 0.32, w: 0.05, d: 0.12, tall: 0.3 },
+    { x: 0.24, y: 0.40, w: 0.06, d: 0.10, tall: 0.25 },
+    { x: 0.44, y: 0.32, w: 0.12, d: 0.08, tall: 0.4 },
+    { x: 0.44, y: 0.42, w: 0.06, d: 0.08, tall: 0.3 },
+    { x: 0.64, y: 0.32, w: 0.08, d: 0.08, tall: 0.3 },
+    { x: 0.73, y: 0.34, w: 0.08, d: 0.10, tall: 0.35 },
+    // Block row 3
+    { x: 0.04, y: 0.60, w: 0.12, d: 0.08, tall: 0.3 },
+    { x: 0.04, y: 0.70, w: 0.06, d: 0.06, tall: 0.2 },
+    { x: 0.24, y: 0.60, w: 0.10, d: 0.06, tall: 0.25 },
+    { x: 0.24, y: 0.68, w: 0.06, d: 0.08, tall: 0.3 },
+    { x: 0.44, y: 0.62, w: 0.08, d: 0.10, tall: 0.35 },
+    { x: 0.53, y: 0.64, w: 0.04, d: 0.06, tall: 0.2 },
+    { x: 0.64, y: 0.60, w: 0.14, d: 0.06, tall: 0.3 },
+    { x: 0.64, y: 0.68, w: 0.06, d: 0.08, tall: 0.25 },
+  ],
+  suburban: [
+    // Scattered small houses on curving lots — NOT a grid
+    // Cluster top-left — cul-de-sac neighborhood
+    { x: 0.06, y: 0.06, w: 0.035, d: 0.035, tall: 0.1 },
+    { x: 0.12, y: 0.04, w: 0.03, d: 0.04, tall: 0.1 },
+    { x: 0.10, y: 0.11, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.05, y: 0.14, w: 0.035, d: 0.035, tall: 0.1 },
+    { x: 0.17, y: 0.10, w: 0.03, d: 0.035, tall: 0.1 },
+    // Small commercial center
+    { x: 0.30, y: 0.04, w: 0.10, d: 0.05, tall: 0.15 },  // strip mall
+    { x: 0.30, y: 0.10, w: 0.04, d: 0.03, tall: 0.1 },   // gas station
+    // Houses along a road (scattered, not aligned)
+    { x: 0.50, y: 0.05, w: 0.035, d: 0.04, tall: 0.1 },
+    { x: 0.56, y: 0.03, w: 0.03, d: 0.035, tall: 0.1 },
+    { x: 0.55, y: 0.10, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.62, y: 0.06, w: 0.035, d: 0.035, tall: 0.1 },
+    // Church/school (slightly larger)
+    { x: 0.76, y: 0.05, w: 0.06, d: 0.04, tall: 0.15 },
+    { x: 0.76, y: 0.11, w: 0.04, d: 0.035, tall: 0.1 },
+    // Middle row — houses scattered organically
+    { x: 0.04, y: 0.32, w: 0.035, d: 0.03, tall: 0.1 },
+    { x: 0.09, y: 0.30, w: 0.04, d: 0.035, tall: 0.1 },
+    { x: 0.06, y: 0.37, w: 0.03, d: 0.04, tall: 0.1 },
+    { x: 0.15, y: 0.34, w: 0.035, d: 0.035, tall: 0.1 },
+    // Park area — open space with just a pavilion
+    { x: 0.28, y: 0.35, w: 0.03, d: 0.02, tall: 0.05 },  // pavilion
+    // More houses
+    { x: 0.42, y: 0.30, w: 0.035, d: 0.04, tall: 0.1 },
+    { x: 0.48, y: 0.32, w: 0.03, d: 0.035, tall: 0.1 },
+    { x: 0.44, y: 0.38, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.54, y: 0.36, w: 0.035, d: 0.035, tall: 0.1 },
+    { x: 0.62, y: 0.31, w: 0.03, d: 0.04, tall: 0.1 },
+    { x: 0.73, y: 0.34, w: 0.035, d: 0.03, tall: 0.1 },
+    { x: 0.78, y: 0.30, w: 0.04, d: 0.035, tall: 0.1 },
+    { x: 0.84, y: 0.34, w: 0.03, d: 0.04, tall: 0.1 },
+    // Bottom row — more scattered houses
+    { x: 0.05, y: 0.58, w: 0.035, d: 0.035, tall: 0.1 },
+    { x: 0.11, y: 0.56, w: 0.03, d: 0.04, tall: 0.1 },
+    { x: 0.08, y: 0.63, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.20, y: 0.60, w: 0.035, d: 0.035, tall: 0.1 },
+    // Apartment complex (slightly bigger)
+    { x: 0.35, y: 0.56, w: 0.06, d: 0.04, tall: 0.15 },
+    { x: 0.35, y: 0.62, w: 0.06, d: 0.04, tall: 0.15 },
+    // Scattered houses continue
+    { x: 0.52, y: 0.58, w: 0.03, d: 0.035, tall: 0.1 },
+    { x: 0.58, y: 0.55, w: 0.035, d: 0.04, tall: 0.1 },
+    { x: 0.56, y: 0.62, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.66, y: 0.60, w: 0.035, d: 0.035, tall: 0.1 },
+    { x: 0.74, y: 0.57, w: 0.03, d: 0.04, tall: 0.1 },
+    { x: 0.80, y: 0.60, w: 0.04, d: 0.03, tall: 0.1 },
+    { x: 0.78, y: 0.66, w: 0.035, d: 0.035, tall: 0.1 },
+  ],
+  industrial: [
+    // Large warehouses and factories, very wide roads, few big structures
+    // North zone — big warehouses
+    { x: 0.03, y: 0.04, w: 0.20, d: 0.08, tall: 0.2 },   // long warehouse
+    { x: 0.03, y: 0.14, w: 0.08, d: 0.12, tall: 0.25 },  // loading bays
+    { x: 0.30, y: 0.03, w: 0.16, d: 0.12, tall: 0.3 },   // big factory
+    { x: 0.30, y: 0.17, w: 0.06, d: 0.04, tall: 0.1 },   // loading dock
+    // Tank farm / silos (small but tall)
+    { x: 0.56, y: 0.05, w: 0.04, d: 0.04, tall: 0.35 },  // silo 1
+    { x: 0.62, y: 0.05, w: 0.04, d: 0.04, tall: 0.35 },  // silo 2
+    { x: 0.68, y: 0.05, w: 0.04, d: 0.04, tall: 0.35 },  // silo 3
+    { x: 0.56, y: 0.12, w: 0.16, d: 0.06, tall: 0.2 },   // processing plant
+    // South zone — more warehouses, spread out
+    { x: 0.03, y: 0.40, w: 0.14, d: 0.12, tall: 0.25 },
+    { x: 0.03, y: 0.55, w: 0.22, d: 0.06, tall: 0.15 },  // very long low building
+    // Open yard (no buildings — just empty space for trucks)
+    { x: 0.30, y: 0.42, w: 0.10, d: 0.08, tall: 0.2 },
+    { x: 0.42, y: 0.38, w: 0.06, d: 0.14, tall: 0.3,
+      wing: { x: 0.42, y: 0.52, w: 0.12, d: 0.04 } },   // L-shaped plant
+    // East side — distribution center
+    { x: 0.60, y: 0.36, w: 0.22, d: 0.10, tall: 0.2 },  // huge distribution bldg
+    { x: 0.60, y: 0.50, w: 0.10, d: 0.06, tall: 0.15 },
+    { x: 0.74, y: 0.50, w: 0.08, d: 0.10, tall: 0.2 },
+    // Bottom — parking structures & small offices
+    { x: 0.03, y: 0.70, w: 0.08, d: 0.06, tall: 0.15 },
+    { x: 0.30, y: 0.68, w: 0.18, d: 0.06, tall: 0.2 },
+    { x: 0.60, y: 0.68, w: 0.12, d: 0.08, tall: 0.2 },
+    { x: 0.78, y: 0.70, w: 0.06, d: 0.06, tall: 0.15 },
+  ],
+  campus: [
+    // University/office campus — buildings around open quads, organic layout
+    // North quad — U-shaped building around open green
+    { x: 0.10, y: 0.05, w: 0.14, d: 0.04, tall: 0.3 },   // north wing
+    { x: 0.10, y: 0.09, w: 0.04, d: 0.10, tall: 0.3 },   // west wing
+    { x: 0.20, y: 0.09, w: 0.04, d: 0.10, tall: 0.3 },   // east wing
+    // (open quad in the middle: 0.14-0.20, 0.09-0.19)
+    // Library (standalone, rotated feel)
+    { x: 0.32, y: 0.06, w: 0.10, d: 0.06, tall: 0.35 },
+    { x: 0.32, y: 0.14, w: 0.04, d: 0.04, tall: 0.2 },   // annex
+    // Science complex — cluster of connected buildings
+    { x: 0.52, y: 0.04, w: 0.06, d: 0.08, tall: 0.3 },
+    { x: 0.59, y: 0.04, w: 0.06, d: 0.06, tall: 0.25 },
+    { x: 0.59, y: 0.11, w: 0.08, d: 0.04, tall: 0.2 },
+    // Tower (admin/bell tower — small footprint, very tall)
+    { x: 0.78, y: 0.08, w: 0.03, d: 0.03, tall: 0.5 },
+    // Central green — mostly open, a few small buildings
+    // Student center (south of quad)
+    { x: 0.14, y: 0.28, w: 0.08, d: 0.05, tall: 0.2 },
+    // Arts building — standalone
+    { x: 0.08, y: 0.38, w: 0.06, d: 0.06, tall: 0.25 },
+    // Lecture halls — two parallel buildings
+    { x: 0.30, y: 0.30, w: 0.12, d: 0.04, tall: 0.2 },
+    { x: 0.30, y: 0.38, w: 0.12, d: 0.04, tall: 0.2 },
+    // (open courtyard between them: 0.30-0.42, 0.34-0.38)
+    // Engineering building — L-shape
+    { x: 0.52, y: 0.28, w: 0.10, d: 0.05, tall: 0.3,
+      wing: { x: 0.57, y: 0.33, w: 0.05, d: 0.08 } },
+    // Dorms — scattered cluster (south area)
+    { x: 0.06, y: 0.56, w: 0.05, d: 0.08, tall: 0.2 },
+    { x: 0.13, y: 0.58, w: 0.05, d: 0.06, tall: 0.2 },
+    { x: 0.06, y: 0.68, w: 0.05, d: 0.06, tall: 0.2 },
+    { x: 0.13, y: 0.66, w: 0.05, d: 0.08, tall: 0.2 },
+    // Athletic center
+    { x: 0.30, y: 0.52, w: 0.14, d: 0.08, tall: 0.15 },  // gymnasium
+    // Sports field area — open (no buildings here, 0.30-0.44, 0.62-0.78)
+    // Research park (east side, looser spacing)
+    { x: 0.56, y: 0.48, w: 0.08, d: 0.06, tall: 0.25 },
+    { x: 0.68, y: 0.46, w: 0.06, d: 0.08, tall: 0.3 },
+    { x: 0.56, y: 0.58, w: 0.06, d: 0.06, tall: 0.2 },
+    { x: 0.66, y: 0.60, w: 0.08, d: 0.05, tall: 0.25 },
+    // Parking garage (edge of campus)
+    { x: 0.80, y: 0.46, w: 0.08, d: 0.12, tall: 0.15 },
+  ],
+};
+
+// Street grid per top-down scene
+// Downtown: tight grid with many cross-streets
+// Midrise: regular grid, slightly wider spacing
+// Suburban: just a couple of main roads (houses are along local lanes, not shown)
+// Industrial: wide service roads, fewer cross-streets
+// Campus: mainly walkways (drawn differently in overlay)
+const topStreets = {
+  downtown:   { h: [0.16, 0.36, 0.55, 0.76], v: [0.19, 0.39, 0.60, 0.76] },
+  midrise:    { h: [0.26, 0.54], v: [0.20, 0.42, 0.62] },
+  suburban:   { h: [0.25, 0.50], v: [0.26, 0.70] },
+  industrial: { h: [0.32, 0.62], v: [0.26, 0.54] },
+  campus:     { h: [0.24, 0.46], v: [0.26, 0.50] },
+};
+
+let currentScene = 'mixed';
+let currentSideScene = 'mixed';
+let currentTopScene = 'downtown';
+
+// Centering transform — scale & shift building cluster to fill the canvas evenly
+let activeBuildings = [];
+let activeStreets = { h: [], v: [] };
+let sceneTx = { ox: 0, oy: 0, s: 1 };
+
+function applySceneTransform() {
+  if (viewMode === 'side') {
+    activeBuildings = []; activeStreets = { h: [], v: [] };
+    sceneTx = { ox: 0, oy: 0, s: 1 };
+    return;
+  }
+  const buildings = topScenes[currentScene];
+  const streets = topStreets[currentScene];
+
+  // Bounding box of all buildings (including wings) + streets
+  let xMin = 1, xMax = 0, yMin = 1, yMax = 0;
+  for (const b of buildings) {
+    xMin = Math.min(xMin, b.x); xMax = Math.max(xMax, b.x + b.w);
+    yMin = Math.min(yMin, b.y); yMax = Math.max(yMax, b.y + b.d);
+    if (b.wing) {
+      xMin = Math.min(xMin, b.wing.x); xMax = Math.max(xMax, b.wing.x + b.wing.w);
+      yMin = Math.min(yMin, b.wing.y); yMax = Math.max(yMax, b.wing.y + b.wing.d);
+    }
+  }
+  for (const s of streets.h) { yMin = Math.min(yMin, s - 0.03); yMax = Math.max(yMax, s + 0.03); }
+  for (const s of streets.v) { xMin = Math.min(xMin, s - 0.03); xMax = Math.max(xMax, s + 0.03); }
+
+  const pad = 0.04;
+  const rangeX = (xMax - xMin) || 1;
+  const rangeY = (yMax - yMin) || 1;
+  // Uniform scale preserves building aspect ratios
+  const scale = Math.min((1 - 2 * pad) / rangeX, (1 - 2 * pad) / rangeY);
+  const ox = (1 - rangeX * scale) / 2 - xMin * scale;
+  const oy = (1 - rangeY * scale) / 2 - yMin * scale;
+  sceneTx = { ox, oy, s: scale };
+
+  // Transform buildings
+  activeBuildings = buildings.map(b => {
+    const tb = { ...b, x: ox + b.x * scale, y: oy + b.y * scale, w: b.w * scale, d: b.d * scale };
+    if (b.wing) {
+      tb.wing = { x: ox + b.wing.x * scale, y: oy + b.wing.y * scale, w: b.wing.w * scale, d: b.wing.d * scale };
+    }
+    return tb;
+  });
+  // Transform streets
+  activeStreets = {
+    h: streets.h.map(s => oy + s * scale),
+    v: streets.v.map(s => ox + s * scale),
+  };
+  // Invalidate map features cache (features depend on transformed coords)
+  delete mapFeaturesCache[currentScene];
+}
+
+// ==========================
+// STAMP SOLID CELLS
+// ==========================
+function stampSolidSide() {
+  solid.fill(0);
+  const gj = NY;
+  for (let i = 0; i <= NX+1; i++) { solid[I(i,gj)] = 1; solid[I(i,gj+1)] = 1; }
+  for (const b of sideScenes[currentScene]) {
+    const x0 = Math.floor(b.x*NX), x1 = Math.floor((b.x+b.w)*NX);
+    const bh = Math.floor(b.h*NY), topJ = gj - bh;
+    for (let j = topJ; j <= gj; j++)
+      for (let i = x0; i <= x1; i++)
+        if (i >= 0 && i <= NX+1 && j >= 0 && j <= NY+1) solid[I(i,j)] = 1;
+    if (b.roof === 'pitched' && b.pitch) {
+      const cx = (x0+x1)/2, halfW = (x1-x0)/2, pc = Math.floor(b.pitch*NY);
+      for (let dj = 0; dj < pc; dj++) {
+        const frac = dj/pc, l = Math.floor(cx-halfW*(1-frac)), r = Math.ceil(cx+halfW*(1-frac)), rj = topJ-dj;
+        if (rj < 1) break;
+        for (let i = l; i <= r; i++) if (i >= 0 && i <= NX+1 && rj >= 0 && rj <= NY+1) solid[I(i,rj)] = 1;
+      }
+    }
+  }
+}
+
+function stampSolidTop() {
+  solid.fill(0);
+  // No solid walls at domain edges — boundaries are open (handled by enforceBoundaries)
+
+  // Helper: stamp a rect with 1-cell inset so narrow gaps between buildings stay passable.
+  // The visual overlay draws from fractional coords so appearance is unaffected.
+  function stampRect(fx, fy, fw, fd) {
+    const x0 = Math.ceil(fx * NX);               // inset left by up to 1 cell
+    const x1 = Math.max(x0, Math.floor((fx + fw) * NX) - 1);  // inset right
+    const y0 = Math.ceil(fy * NY);               // inset top
+    const y1 = Math.max(y0, Math.floor((fy + fd) * NY) - 1);  // inset bottom
+    for (let j = y0; j <= y1; j++)
+      for (let i = x0; i <= x1; i++)
+        if (i >= 1 && i <= NX && j >= 1 && j <= NY) solid[I(i,j)] = 1;
+  }
+
+  for (const b of activeBuildings) {
+    stampRect(b.x, b.y, b.w, b.d);
+    if (b.wing) stampRect(b.wing.x, b.wing.y, b.wing.w, b.wing.d);
+  }
+  // Trees are visual only — they don't block the fluid grid
+}
+
+// ==============================================================
+//  STABLE FLUIDS SOLVER
+// ==============================================================
+
+// Bilinear interpolation, treating solid cells as 0
+function bilerp(field, x, y) {
+  const i0 = Math.floor(x), j0 = Math.floor(y);
+  const i1 = i0 + 1, j1 = j0 + 1;
+  const sx = x - i0, sy = y - j0;
+  const ci0 = Math.max(1, Math.min(NX, i0));
+  const ci1 = Math.max(1, Math.min(NX, i1));
+  const cj0 = Math.max(1, Math.min(NY, j0));
+  const cj1 = Math.max(1, Math.min(NY, j1));
+  const v00 = solid[I(ci0,cj0)] ? 0 : field[I(ci0,cj0)];
+  const v10 = solid[I(ci1,cj0)] ? 0 : field[I(ci1,cj0)];
+  const v01 = solid[I(ci0,cj1)] ? 0 : field[I(ci0,cj1)];
+  const v11 = solid[I(ci1,cj1)] ? 0 : field[I(ci1,cj1)];
+  return (1-sx)*(1-sy)*v00 + sx*(1-sy)*v10 + (1-sx)*sy*v01 + sx*sy*v11;
+}
+
+// Semi-Lagrangian advection: trace backward through velocity field
+function advect(dst, src, uF, vF, dt) {
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      const idx = I(i,j);
+      if (solid[idx]) { dst[idx] = 0; continue; }
+      let x = i - dt * uF[idx];
+      let y = j - dt * vF[idx];
+      x = Math.max(1, Math.min(NX, x));
+      y = Math.max(1, Math.min(NY, y));
+      dst[idx] = bilerp(src, x, y);
+    }
+  }
+}
+
+// Vorticity confinement — counteracts numerical diffusion of semi-Lagrangian
+function vorticityConfinement(epsilon) {
+  // Compute vorticity: omega = dv/dx - du/dy
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      const idx = I(i,j);
+      if (solid[idx]) { omega_f[idx] = 0; continue; }
+      omega_f[idx] = 0.5 * (
+        (solid[I(i+1,j)] ? 0 : v[I(i+1,j)]) - (solid[I(i-1,j)] ? 0 : v[I(i-1,j)]) -
+        ((solid[I(i,j+1)] ? 0 : u[I(i,j+1)]) - (solid[I(i,j-1)] ? 0 : u[I(i,j-1)]))
+      );
+    }
+  // Confining force: push vortices against diffusion
+  for (let j = 2; j < NY; j++)
+    for (let i = 2; i < NX; i++) {
+      const idx = I(i,j);
+      if (solid[idx]) continue;
+      const dox = Math.abs(omega_f[I(i+1,j)]) - Math.abs(omega_f[I(i-1,j)]);
+      const doy = Math.abs(omega_f[I(i,j+1)]) - Math.abs(omega_f[I(i,j-1)]);
+      const len = Math.sqrt(dox*dox + doy*doy) + 1e-5;
+      u[idx] += epsilon * (doy / len) * omega_f[idx];
+      v[idx] -= epsilon * (dox / len) * omega_f[idx];
+    }
+}
+
+// Pressure projection — enforce incompressibility (div · V = 0)
+function project_step() {
+  // Compute divergence
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      const idx = I(i,j);
+      if (solid[idx]) { div_f[idx] = 0; p[idx] = 0; continue; }
+      div_f[idx] = -0.5 * (
+        ((solid[I(i+1,j)] ? 0 : u[I(i+1,j)]) - (solid[I(i-1,j)] ? 0 : u[I(i-1,j)])) +
+        ((solid[I(i,j+1)] ? 0 : v[I(i,j+1)]) - (solid[I(i,j-1)] ? 0 : v[I(i,j-1)]))
+      );
+      p[idx] = 0;
+    }
+
+  // Pressure Poisson solve via SOR
+  const w = 1.85;
+  for (let k = 0; k < 20; k++) {
+    for (let j = 1; j <= NY; j++)
+      for (let i = 1; i <= NX; i++) {
+        const idx = I(i,j);
+        if (solid[idx]) continue;
+        // Neumann BC at walls: solid neighbor → reflect pressure
+        let sum = 0, n = 0;
+        if (!solid[I(i+1,j)]) { sum += p[I(i+1,j)]; n++; } else { sum += p[idx]; n++; }
+        if (!solid[I(i-1,j)]) { sum += p[I(i-1,j)]; n++; } else { sum += p[idx]; n++; }
+        if (!solid[I(i,j+1)]) { sum += p[I(i,j+1)]; n++; } else { sum += p[idx]; n++; }
+        if (!solid[I(i,j-1)]) { sum += p[I(i,j-1)]; n++; } else { sum += p[idx]; n++; }
+        const pNew = (div_f[idx] + sum) / n;
+        p[idx] += w * (pNew - p[idx]);
+      }
+  }
+
+  // Neumann BC for pressure: copy interior pressure to ghost cells
+  // (prevents artificial zero-pressure wall at domain edges)
+  for (let j = 1; j <= NY; j++) {
+    p[I(0,j)] = p[I(1,j)];
+    p[I(NX+1,j)] = p[I(NX,j)];
+  }
+  for (let i = 0; i <= NX+1; i++) {
+    p[I(i,0)] = p[I(i,1)];
+    p[I(i,NY+1)] = p[I(i,NY)];
+  }
+
+  // Subtract pressure gradient (Neumann-aware)
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      const idx = I(i,j);
+      if (solid[idx]) continue;
+      const pR = solid[I(i+1,j)] ? p[idx] : p[I(i+1,j)];
+      const pL = solid[I(i-1,j)] ? p[idx] : p[I(i-1,j)];
+      const pD = solid[I(i,j+1)] ? p[idx] : p[I(i,j+1)];
+      const pU = solid[I(i,j-1)] ? p[idx] : p[I(i,j-1)];
+      u[idx] -= 0.5 * (pR - pL);
+      v[idx] -= 0.5 * (pD - pU);
+    }
+}
+
+// Enforce boundary conditions every step
+function enforceBoundaries() {
+  // Solid: no-slip
+  for (let j = 0; j <= NY+1; j++)
+    for (let i = 0; i <= NX+1; i++)
+      if (solid[I(i,j)]) { u[I(i,j)] = 0; v[I(i,j)] = 0; }
+
+  const theta = getWindDirRad();
+
+  if (viewMode === 'side') {
+    const windRight = Math.cos(theta) >= 0;
+    if (windRight) {
+      for (let j = 0; j <= NY+1; j++) { u[I(0,j)] = uProfileSide(j); v[I(0,j)] = 0; }
+      for (let j = 0; j <= NY+1; j++) { u[I(NX+1,j)] = u[I(NX,j)]; v[I(NX+1,j)] = v[I(NX,j)]; }
+    } else {
+      for (let j = 0; j <= NY+1; j++) { u[I(NX+1,j)] = -uProfileSide(j); v[I(NX+1,j)] = 0; }
+      for (let j = 0; j <= NY+1; j++) { u[I(0,j)] = u[I(1,j)]; v[I(0,j)] = v[I(1,j)]; }
+    }
+    for (let i = 0; i <= NX+1; i++) { u[I(i,0)] = u[I(i,1)]; v[I(i,0)] = 0; }
+  } else {
+    const U = getWindVelocity();
+    const ux = U * Math.cos(theta), uy = U * Math.sin(theta);
+    const dwx = Math.cos(theta), dwy = Math.sin(theta);
+
+    for (let j = 0; j <= NY+1; j++) {
+      if (dwx > 0.01)       { u[I(0,j)] = ux; v[I(0,j)] = uy; }
+      else if (dwx < -0.01) { u[I(0,j)] = u[I(1,j)]; v[I(0,j)] = v[I(1,j)]; }
+      else                   { u[I(0,j)] = u[I(1,j)]; v[I(0,j)] = v[I(1,j)]; }
+    }
+    for (let j = 0; j <= NY+1; j++) {
+      if (dwx < -0.01)      { u[I(NX+1,j)] = ux; v[I(NX+1,j)] = uy; }
+      else if (dwx > 0.01)  { u[I(NX+1,j)] = u[I(NX,j)]; v[I(NX+1,j)] = v[I(NX,j)]; }
+      else                   { u[I(NX+1,j)] = u[I(NX+1,j)]; v[I(NX+1,j)] = v[I(NX,j)]; }
+    }
+    for (let i = 0; i <= NX+1; i++) {
+      if (dwy > 0.01)       { u[I(i,0)] = ux; v[I(i,0)] = uy; }
+      else if (dwy < -0.01) { u[I(i,0)] = u[I(i,1)]; v[I(i,0)] = v[I(i,1)]; }
+      else                   { u[I(i,0)] = u[I(i,1)]; v[I(i,0)] = v[I(i,1)]; }
+    }
+    for (let i = 0; i <= NX+1; i++) {
+      if (dwy < -0.01)      { u[I(i,NY+1)] = ux; v[I(i,NY+1)] = uy; }
+      else if (dwy > 0.01)  { u[I(i,NY+1)] = u[I(i,NY)]; v[I(i,NY+1)] = v[I(i,NY)]; }
+      else                   { u[I(i,NY+1)] = u[I(i,NY)]; v[I(i,NY+1)] = v[I(i,NY)]; }
+    }
+  }
+}
+
+// Sponge layers — nudge boundary regions toward freestream to prevent turbulence escape
+function applySponge() {
+  const theta = getWindDirRad();
+
+  if (viewMode === 'side') {
+    const windRight = Math.cos(theta) >= 0;
+    const sign = windRight ? 1 : -1;
+    // Top sponge: top 18% of domain nudged toward freestream
+    const spongeTop = Math.max(4, Math.floor(NY * 0.18));
+    for (let j = 1; j <= spongeTop; j++) {
+      const strength = 0.6 * (1.0 - j / spongeTop);
+      const targetU = sign * uProfileSide(j);
+      for (let i = 1; i <= NX; i++) {
+        if (solid[I(i,j)]) continue;
+        u[I(i,j)] += strength * (targetU - u[I(i,j)]);
+        v[I(i,j)] *= (1.0 - strength);
+      }
+    }
+    // Outlet sponge: last 6% of domain in downwind direction (gentle — pressure Neumann handles most of it)
+    const spongeOut = Math.max(3, Math.floor(NX * 0.06));
+    for (let i = 0; i < spongeOut; i++) {
+      const gi = windRight ? (NX - i) : (i + 1);
+      const strength = 0.15 * (1.0 - i / spongeOut);
+      for (let j = 1; j <= NY; j++) {
+        if (solid[I(gi,j)]) continue;
+        const targetU = sign * uProfileSide(j);
+        u[I(gi,j)] += strength * (targetU - u[I(gi,j)]);
+        v[I(gi,j)] *= (1.0 - strength);
+      }
+    }
+  } else {
+    // Top-down: sponge near all edges to prevent accumulation
+    const U = getWindVelocity();
+    const ux = U * Math.cos(theta), uy = U * Math.sin(theta);
+    const dwx = Math.cos(theta), dwy = Math.sin(theta);
+    const sponge = Math.max(4, Math.floor(Math.min(NX, NY) * 0.07));
+
+    // All-edge sponge: nudge boundary regions toward freestream
+    for (let d = 0; d < sponge; d++) {
+      const strength = 0.4 * (1.0 - d / sponge);
+      // Top edge (j = 1..sponge)
+      for (let i = 1; i <= NX; i++) {
+        const idx = I(i, d + 1);
+        if (solid[idx]) continue;
+        u[idx] += strength * (ux - u[idx]);
+        v[idx] += strength * (uy - v[idx]);
+      }
+      // Bottom edge (j = NY-sponge..NY)
+      for (let i = 1; i <= NX; i++) {
+        const idx = I(i, NY - d);
+        if (solid[idx]) continue;
+        u[idx] += strength * (ux - u[idx]);
+        v[idx] += strength * (uy - v[idx]);
+      }
+      // Left edge (i = 1..sponge)
+      for (let j = 1; j <= NY; j++) {
+        const idx = I(d + 1, j);
+        if (solid[idx]) continue;
+        u[idx] += strength * (ux - u[idx]);
+        v[idx] += strength * (uy - v[idx]);
+      }
+      // Right edge (i = NX-sponge..NX)
+      for (let j = 1; j <= NY; j++) {
+        const idx = I(NX - d, j);
+        if (solid[idx]) continue;
+        u[idx] += strength * (ux - u[idx]);
+        v[idx] += strength * (uy - v[idx]);
+      }
+    }
+
+    // Enforce inlet 3 cells deep
+    if (Math.abs(dwx) > 0.01) {
+      const inletI = dwx > 0 ? 0 : NX + 1;
+      const dir = dwx > 0 ? 1 : -1;
+      for (let d = 0; d < 3; d++) {
+        const ii = inletI + dir * d;
+        if (ii < 0 || ii > NX + 1) break;
+        for (let j = 0; j <= NY + 1; j++) {
+          if (solid[I(ii,j)]) continue;
+          u[I(ii,j)] = ux; v[I(ii,j)] = uy;
+        }
+      }
+    }
+    if (Math.abs(dwy) > 0.01) {
+      const inletJ = dwy > 0 ? 0 : NY + 1;
+      const dir = dwy > 0 ? 1 : -1;
+      for (let d = 0; d < 3; d++) {
+        const jj = inletJ + dir * d;
+        if (jj < 0 || jj > NY + 1) break;
+        for (let i = 0; i <= NX + 1; i++) {
+          if (solid[I(i,jj)]) continue;
+          u[I(i,jj)] = ux; v[I(i,jj)] = uy;
+        }
+      }
+    }
+  }
+}
+
+// One simulation timestep
+function fluidStep(dt) {
+  // Swap: current → workspace
+  const t1 = u0; u0 = u; u = t1;
+  const t2 = v0; v0 = v; v = t2;
+
+  // Advect (semi-Lagrangian)
+  advect(u, u0, u0, v0, dt);
+  advect(v, v0, u0, v0, dt);
+
+  // Vorticity confinement (moderate — just enough to keep vortices crisp)
+  vorticityConfinement(0.12);
+
+  // Sponge layers to keep boundaries clean
+  applySponge();
+
+  // Boundaries → project → boundaries
+  enforceBoundaries();
+  project_step();
+  enforceBoundaries();
+}
+
+// Initialize velocity to freestream everywhere
+function initFlowField() {
+  u.fill(0); v.fill(0); u0.fill(0); v0.fill(0);
+  p.fill(0); div_f.fill(0); omega_f.fill(0);
+  const theta = getWindDirRad();
+  if (viewMode === 'side') {
+    const windRight = Math.cos(theta) >= 0;
+    const sign = windRight ? 1 : -1;
+    for (let j = 0; j <= NY+1; j++)
+      for (let i = 0; i <= NX+1; i++)
+        if (!solid[I(i,j)]) u[I(i,j)] = sign * uProfileSide(j);
+  } else {
+    const U = getWindVelocity();
+    const ux = U * Math.cos(theta), uy = U * Math.sin(theta);
+    for (let j = 0; j <= NY+1; j++)
+      for (let i = 0; i <= NX+1; i++)
+        if (!solid[I(i,j)]) { u[I(i,j)] = ux; v[I(i,j)] = uy; }
+  }
+  enforceBoundaries();
+}
+
+// ==========================
+// VELOCITY INTERPOLATION (for particles)
+// ==========================
+function getVelocity(x, y) {
+  const i = Math.floor(x), j = Math.floor(y);
+  if (i < 1 || i >= NX || j < 1 || j >= NY) {
+    if (viewMode === 'side') {
+      const windRight = Math.cos(getWindDirRad()) >= 0;
+      const spd = uProfileSide(Math.max(0, Math.min(NY, j)));
+      return windRight ? [spd, 0, spd] : [-spd, 0, spd];
+    } else {
+      const U = getWindVelocity();
+      const theta = getWindDirRad();
+      return [U*Math.cos(theta), U*Math.sin(theta), U];
+    }
+  }
+  if (solid[I(i,j)]) return [0, 0, 0];
+  const vx = bilerp(u, x, y);
+  const vy = bilerp(v, x, y);
+  return [vx, vy, Math.sqrt(vx*vx + vy*vy)];
+}
+
+// ==========================
+// PARTICLES
+// ==========================
+const NUM_PARTICLES = 4000;
+let particles;
+
+function newParticle() {
+  let px, py;
+  if (viewMode === 'top') {
+    const theta = getWindDirRad();
+    const dwx = Math.cos(theta), dwy = Math.sin(theta);
+    const absDx = Math.abs(dwx), absDy = Math.abs(dwy);
+    const total = absDx + absDy + 0.001;
+    if (Math.random() < 0.25) {
+      px = 1 + Math.random()*(NX-2);
+      py = 1 + Math.random()*(NY-2);
+    } else if (Math.random() < absDx / total) {
+      px = dwx > 0 ? (1 + Math.random()*3) : (NX-4 + Math.random()*3);
+      py = 1 + Math.random()*(NY-2);
+    } else {
+      px = 1 + Math.random()*(NX-2);
+      py = dwy > 0 ? (1 + Math.random()*3) : (NY-4 + Math.random()*3);
+    }
+  } else {
+    const windRight = Math.cos(getWindDirRad()) >= 0;
+    if (Math.random() < 0.5) {
+      px = windRight ? (1 + Math.random()*3) : (NX-4 + Math.random()*3);
+      py = 1 + Math.random()*(NY-2);
+    } else {
+      px = 1 + Math.random()*(NX-2);
+      py = 1 + Math.random()*(NY-2);
+    }
+  }
+  return { x: px, y: py, ox: px, oy: py, age: 0, maxAge: 200 + Math.random()*400 };
+}
+
+function initParticles() {
+  particles = [];
+  for (let n = 0; n < NUM_PARTICLES; n++) particles.push(newParticle());
+}
+
+// Pre-compute 32 color buckets for speed-to-color mapping (avoids per-particle string alloc)
+const NUM_COLOR_BUCKETS = 32;
+const colorBuckets = new Array(NUM_COLOR_BUCKETS);
+(function buildColorBuckets() {
+  for (let b = 0; b < NUM_COLOR_BUCKETS; b++) {
+    const t = b / (NUM_COLOR_BUCKETS - 1);
+    let r, g, bl;
+    if (t < 0.2)      { const s=t/0.2;       r=25; g=60+s*130; bl=200+s*30; }
+    else if (t < 0.4)  { const s=(t-0.2)/0.2; r=25+s*15; g=190+s*30; bl=230-s*100; }
+    else if (t < 0.6)  { const s=(t-0.4)/0.2; r=40+s*80; g=220-s*20; bl=130-s*80; }
+    else if (t < 0.8)  { const s=(t-0.6)/0.2; r=120+s*120; g=200-s*80; bl=50-s*30; }
+    else               { const s=(t-0.8)/0.2; r=240; g=120-s*80; bl=20; }
+    colorBuckets[b] = `rgb(${r|0},${g|0},${bl|0})`;
+  }
+})();
+
+function stepAndDrawParticles() {
+  const stepMul = 0.55;
+  // Normalization: freestream ≈ green/yellow, only acceleration zones hit orange/red
+  const maxS = getWindVelocity() * 2.0 + 0.05;
+  const bucketScale = (NUM_COLOR_BUCKETS - 1) / maxS;
+
+  // Collect draw commands into buckets: each bucket is an array of [ox,oy,nx,ny]
+  const buckets = new Array(NUM_COLOR_BUCKETS);
+  for (let b = 0; b < NUM_COLOR_BUCKETS; b++) buckets[b] = [];
+
+  for (let n = 0; n < NUM_PARTICLES; n++) {
+    const pp = particles[n];
+    pp.age++;
+    if (pp.age > pp.maxAge || pp.x < 0 || pp.x >= NX || pp.y < 0 || pp.y >= NY) {
+      particles[n] = newParticle(); continue;
+    }
+    const ii = Math.floor(pp.x), jj = Math.floor(pp.y);
+    if (ii < 0 || ii > NX+1 || jj < 0 || jj > NY+1 || solid[I(Math.max(0,Math.min(NX+1,ii)), Math.max(0,Math.min(NY+1,jj)))]) {
+      particles[n] = newParticle(); continue;
+    }
+    const [vx, vy, spd] = getVelocity(pp.x, pp.y);
+    pp.ox = pp.x; pp.oy = pp.y;
+    pp.x += vx * stepMul;
+    pp.y += vy * stepMul;
+    if (pp.age > 1 && spd > 0.002) {
+      const bi = Math.min(NUM_COLOR_BUCKETS - 1, (spd * bucketScale) | 0);
+      buckets[bi].push(pp.ox * CELL, pp.oy * CELL, pp.x * CELL, pp.y * CELL);
+    }
+    if (pp.x > NX-1 || pp.x < 0 || pp.y > NY-1 || pp.y < 0) particles[n] = newParticle();
+  }
+
+  // Draw all lines per color bucket in a single path — massive canvas perf win
+  tCtx.lineWidth = 1.1;
+  tCtx.globalAlpha = 0.7;
+  for (let b = 0; b < NUM_COLOR_BUCKETS; b++) {
+    const arr = buckets[b];
+    if (arr.length === 0) continue;
+    tCtx.strokeStyle = colorBuckets[b];
+    tCtx.beginPath();
+    for (let k = 0; k < arr.length; k += 4) {
+      tCtx.moveTo(arr[k], arr[k+1]);
+      tCtx.lineTo(arr[k+2], arr[k+3]);
+    }
+    tCtx.stroke();
+  }
+  tCtx.globalAlpha = 1;
+}
+
+// ==========================
+// FADE + OVERLAY
+// ==========================
+function fadeTrails() {
+  const rate = parseInt(document.getElementById('fadeRate').value);
+  tCtx.fillStyle = `rgba(13, 13, 15, ${rate * 0.008})`;
+  tCtx.fillRect(0, 0, trailCanvas.width, trailCanvas.height);
+}
+
+function drawWindArrow(ctx, x, y, angle, len) {
+  const ex = x + Math.cos(angle)*len, ey = y + Math.sin(angle)*len;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(ex, ey);
+  const hl = 5, ha1 = angle + Math.PI*0.8, ha2 = angle - Math.PI*0.8;
+  ctx.lineTo(ex + Math.cos(ha1)*hl, ey + Math.sin(ha1)*hl);
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(ex + Math.cos(ha2)*hl, ey + Math.sin(ha2)*hl);
+  ctx.stroke();
+}
+
+// Seeded random for deterministic window lighting and rooftop details
+function seededRand(seed) {
+  let s = seed | 0;
+  return function() { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+}
+
+function drawOverlaySide() {
+  oCtx.clearRect(0, 0, olCanvas.width, olCanvas.height);
+  const gj = NY;
+  const windRight = Math.cos(getWindDirRad()) >= 0;
+
+  // Ground with subtle gradient
+  const groundY = gj * CELL;
+  const grdGrad = oCtx.createLinearGradient(0, groundY, 0, olCanvas.height);
+  grdGrad.addColorStop(0, '#1a1a20');
+  grdGrad.addColorStop(0.3, '#141418');
+  grdGrad.addColorStop(1, '#101014');
+  oCtx.fillStyle = grdGrad;
+  oCtx.fillRect(0, groundY, olCanvas.width, olCanvas.height - groundY);
+  // Ground line
+  oCtx.strokeStyle = '#3a3a45'; oCtx.lineWidth = 1.5;
+  oCtx.beginPath(); oCtx.moveTo(0, groundY); oCtx.lineTo(olCanvas.width, groundY); oCtx.stroke();
+
+  // Sky glow near horizon
+  const skyGrad = oCtx.createLinearGradient(0, groundY - 60, 0, groundY);
+  skyGrad.addColorStop(0, 'rgba(20,25,50,0)');
+  skyGrad.addColorStop(1, 'rgba(20,25,50,0.15)');
+  oCtx.fillStyle = skyGrad;
+  oCtx.fillRect(0, groundY - 60, olCanvas.width, 60);
+
+  let bIdx = 0;
+  for (const b of sideScenes[currentScene]) {
+    const rng = seededRand(bIdx * 137 + 42);
+    const x0 = Math.floor(b.x*NX), x1 = Math.floor((b.x+b.w)*NX);
+    const H = Math.floor(b.h*NY), topJ = gj-H;
+    const bx = x0*CELL, by = topJ*CELL, bw = (x1-x0)*CELL, bhPx = H*CELL;
+
+    // Building body with vertical gradient
+    if (bhPx < 1) { bIdx++; continue; }
+    const bGrad = oCtx.createLinearGradient(bx, by, bx, by + Math.max(1, bhPx));
+    bGrad.addColorStop(0, '#22222c');
+    bGrad.addColorStop(0.5, '#1a1a24');
+    bGrad.addColorStop(1, '#16161e');
+    oCtx.fillStyle = bGrad;
+    oCtx.fillRect(bx, by, bw, bhPx);
+
+    // Building edge highlights (subtle)
+    oCtx.strokeStyle = '#2e2e3a'; oCtx.lineWidth = 1;
+    oCtx.strokeRect(bx, by, bw, bhPx);
+    // Left edge highlight
+    oCtx.strokeStyle = 'rgba(60,60,80,0.3)'; oCtx.lineWidth = 1;
+    oCtx.beginPath(); oCtx.moveTo(bx + 0.5, by); oCtx.lineTo(bx + 0.5, by + bhPx); oCtx.stroke();
+
+    // Floor lines (subtle horizontal separators)
+    const floorH = Math.max(12, CELL * 3);
+    oCtx.strokeStyle = 'rgba(40,40,55,0.3)'; oCtx.lineWidth = 0.5;
+    for (let fy = by + floorH; fy < by + bhPx - 4; fy += floorH) {
+      oCtx.beginPath(); oCtx.moveTo(bx + 2, fy); oCtx.lineTo(bx + bw - 2, fy); oCtx.stroke();
+    }
+
+    // Windows with random lighting
+    const ws = Math.max(4, CELL * 1.6);
+    const wGap = ws * 2.2;
+    const wH = ws * 0.75;
+    for (let wy = by + ws * 1.2; wy < by + bhPx - ws; wy += wGap) {
+      for (let wx = bx + ws * 0.7; wx < bx + bw - ws; wx += wGap * 0.9) {
+        const lit = rng() < 0.4; // 40% of windows are lit
+        if (lit) {
+          // Warm window glow
+          const warmth = 0.5 + rng() * 0.5;
+          const r = Math.floor(200 + warmth * 55);
+          const g = Math.floor(160 + warmth * 40);
+          const bl = Math.floor(60 + warmth * 30);
+          const alpha = 0.6 + rng() * 0.3;
+          // Glow halo
+          oCtx.fillStyle = `rgba(${r},${g},${bl},${alpha * 0.15})`;
+          oCtx.fillRect(wx - 1.5, wy - 1.5, ws * 0.55 + 3, wH + 3);
+          // Window pane
+          oCtx.fillStyle = `rgba(${r},${g},${bl},${alpha})`;
+          oCtx.fillRect(wx, wy, ws * 0.55, wH);
+          // Slight inner variation (blinds effect)
+          if (rng() < 0.3) {
+            oCtx.fillStyle = `rgba(${r-30},${g-20},${bl},${alpha * 0.6})`;
+            oCtx.fillRect(wx, wy + wH * 0.5, ws * 0.55, wH * 0.5);
+          }
+        } else {
+          // Dark window with slight reflection
+          const darkness = rng();
+          if (darkness < 0.6) {
+            oCtx.fillStyle = 'rgba(25,28,40,0.8)';
+          } else {
+            oCtx.fillStyle = 'rgba(40,45,65,0.5)'; // slight sky reflection
+          }
+          oCtx.fillRect(wx, wy, ws * 0.55, wH);
+        }
+        // Window frame
+        oCtx.strokeStyle = 'rgba(50,50,65,0.4)'; oCtx.lineWidth = 0.5;
+        oCtx.strokeRect(wx, wy, ws * 0.55, wH);
+      }
+    }
+
+    // Roof treatment
+    if (b.roof === 'pitched' && b.pitch) {
+      const pc = Math.floor(b.pitch * NY) * CELL, cx = bx + bw / 2;
+      // Roof body
+      const roofGrad = oCtx.createLinearGradient(bx, by, cx, by - pc);
+      roofGrad.addColorStop(0, '#2a2a38');
+      roofGrad.addColorStop(1, '#222230');
+      oCtx.fillStyle = roofGrad;
+      oCtx.beginPath(); oCtx.moveTo(bx, by); oCtx.lineTo(cx, by - pc); oCtx.lineTo(bx + bw, by); oCtx.closePath();
+      oCtx.fill();
+      // Roof outline
+      oCtx.strokeStyle = '#44445a'; oCtx.lineWidth = 1.2;
+      oCtx.beginPath(); oCtx.moveTo(bx, by); oCtx.lineTo(cx, by - pc); oCtx.lineTo(bx + bw, by); oCtx.stroke();
+      // Ridge cap
+      oCtx.strokeStyle = '#55556a'; oCtx.lineWidth = 1.5;
+      oCtx.beginPath(); oCtx.moveTo(cx - 2, by - pc + 1); oCtx.lineTo(cx + 2, by - pc + 1); oCtx.stroke();
+    } else {
+      // Flat roof with parapet edge
+      oCtx.fillStyle = '#282834'; oCtx.fillRect(bx - 1, by - 3, bw + 2, 4);
+      oCtx.strokeStyle = '#4a4a5e'; oCtx.lineWidth = 1.5;
+      oCtx.beginPath(); oCtx.moveTo(bx - 1, by - 3); oCtx.lineTo(bx + bw + 1, by - 3); oCtx.stroke();
+      // Rooftop equipment (AC units, antennas)
+      if (bw > 20) {
+        // AC unit
+        const acX = bx + bw * 0.25 + rng() * bw * 0.3;
+        const acW = Math.min(12, bw * 0.15);
+        oCtx.fillStyle = '#2e2e3c';
+        oCtx.fillRect(acX, by - 8, acW, 5);
+        oCtx.strokeStyle = '#3e3e50'; oCtx.lineWidth = 0.8;
+        oCtx.strokeRect(acX, by - 8, acW, 5);
+        // Antenna
+        if (rng() < 0.6) {
+          const antX = bx + bw * 0.6 + rng() * bw * 0.25;
+          oCtx.strokeStyle = '#50506a'; oCtx.lineWidth = 1;
+          oCtx.beginPath(); oCtx.moveTo(antX, by - 3); oCtx.lineTo(antX, by - 16 - rng() * 8); oCtx.stroke();
+          // Small cross-bar
+          const antTop = by - 14 - rng() * 6;
+          oCtx.beginPath(); oCtx.moveTo(antX - 3, antTop); oCtx.lineTo(antX + 3, antTop); oCtx.stroke();
+        }
+        // Water tank (occasional)
+        if (rng() < 0.3 && bw > 30) {
+          const tkX = bx + bw * 0.7;
+          oCtx.fillStyle = '#2a2a38';
+          oCtx.beginPath(); oCtx.arc(tkX, by - 6, 4, 0, Math.PI * 2); oCtx.fill();
+          oCtx.strokeStyle = '#3e3e50'; oCtx.lineWidth = 0.6; oCtx.stroke();
+        }
+      }
+    }
+    bIdx++;
+  }
+
+  // Wind arrows
+  const arrowAngle = windRight ? 0 : Math.PI;
+  oCtx.globalAlpha = 0.2; oCtx.strokeStyle = '#a0a0a8'; oCtx.lineWidth = 1;
+  for (let x = 25; x < olCanvas.width - 20; x += 90) drawWindArrow(oCtx, x, 20, arrowAngle, 22);
+  oCtx.globalAlpha = 1;
+  oCtx.font = '10px -apple-system, sans-serif'; oCtx.fillStyle = '#606068';
+  oCtx.fillText(`WIND ${windRight ? '→' : '←'}  (Side View · Real-time NS)`, 16, 12);
+}
+
+// Generate map features (trees, street lights) placed along the street grid
+function generateMapFeatures(scene) {
+  const buildings = activeBuildings;
+  const streets = activeStreets;
+  const trees = [];
+  const streetLights = [];
+  const rng = seededRand(scene.length * 73 + 19);
+  const SW = 0.02; // half street width
+
+  const roadHW = 0.025; // half-road width for collision checks (slightly wider than visual SW)
+
+  function insideBuilding(px, py) {
+    for (const b of buildings) {
+      if (px > b.x - 0.005 && px < b.x + b.w + 0.005 && py > b.y - 0.005 && py < b.y + b.d + 0.005) return true;
+      if (b.wing) {
+        const w = b.wing;
+        if (px > w.x - 0.005 && px < w.x + w.w + 0.005 && py > w.y - 0.005 && py < w.y + w.d + 0.005) return true;
+      }
+    }
+    return false;
+  }
+
+  function insideRoad(px, py) {
+    for (const sy of streets.h) { if (Math.abs(py - sy) < roadHW) return true; }
+    for (const sx of streets.v) { if (Math.abs(px - sx) < roadHW) return true; }
+    return false;
+  }
+
+  // Helper: valid placement = not inside a building, not on a road
+  function canPlace(px, py) { return !insideBuilding(px, py) && !insideRoad(px, py); }
+
+  // Place trees and lights along horizontal streets (on sidewalks, outside road surface)
+  for (const sy of streets.h) {
+    let px = 0.02;
+    while (px < 0.98) {
+      const ty1 = sy - SW - 0.018, ty2 = sy + SW + 0.018;
+      if (canPlace(px, ty1) && rng() < 0.5) {
+        trees.push({ x: px, y: ty1, size: 0.006 + rng() * 0.005 });
+      }
+      if (canPlace(px, ty2) && rng() < 0.5) {
+        trees.push({ x: px, y: ty2, size: 0.006 + rng() * 0.005 });
+      }
+      const ly1 = sy - SW - 0.008, ly2 = sy + SW + 0.008;
+      if (rng() < 0.25 && canPlace(px, ly1)) {
+        streetLights.push({ x: px, y: ly1 });
+      } else if (rng() < 0.25 && canPlace(px, ly2)) {
+        streetLights.push({ x: px, y: ly2 });
+      }
+      px += 0.03 + rng() * 0.02;
+    }
+  }
+
+  // Place trees and lights along vertical streets
+  for (const sx of streets.v) {
+    let py = 0.02;
+    while (py < 0.98) {
+      const tx1 = sx - SW - 0.018, tx2 = sx + SW + 0.018;
+      if (canPlace(tx1, py) && rng() < 0.5) {
+        trees.push({ x: tx1, y: py, size: 0.006 + rng() * 0.005 });
+      }
+      if (canPlace(tx2, py) && rng() < 0.5) {
+        trees.push({ x: tx2, y: py, size: 0.006 + rng() * 0.005 });
+      }
+      const lx1 = sx - SW - 0.008;
+      if (rng() < 0.2 && canPlace(lx1, py)) {
+        streetLights.push({ x: lx1, y: py });
+      }
+      py += 0.03 + rng() * 0.02;
+    }
+  }
+
+  // A few park-like trees in open areas away from streets and buildings
+  for (let i = 0; i < 6; i++) {
+    const tx = 0.05 + rng() * 0.88, ty = 0.05 + rng() * 0.88;
+    if (canPlace(tx, ty)) {
+      trees.push({ x: tx, y: ty, size: 0.01 + rng() * 0.008 });
+    }
+  }
+
+  return { trees, streetLights };
+}
+
+// Cache map features per scene
+const mapFeaturesCache = {};
+function getMapFeatures(scene) {
+  if (!mapFeaturesCache[scene]) mapFeaturesCache[scene] = generateMapFeatures(scene);
+  return mapFeaturesCache[scene];
+}
+
+function drawOverlayTop() {
+  oCtx.clearRect(0, 0, olCanvas.width, olCanvas.height);
+  const theta = getWindDirRad();
+  const W = olCanvas.width, H = olCanvas.height;
+  const features = getMapFeatures(currentScene);
+  const buildings = activeBuildings;
+  const streets = activeStreets;
+  const SW = 0.02; // half street width in fraction
+
+  // NO opaque background — trail canvas shows through as the "asphalt"
+
+  // Scene-specific road drawing
+  const isCampus = currentScene === 'campus';
+  const isSuburban = currentScene === 'suburban';
+  const isIndustrial = currentScene === 'industrial';
+
+  // Road width varies by scene type
+  const roadMul = isIndustrial ? 1.5 : isSuburban ? 0.7 : isCampus ? 0.5 : 1.0;
+  const roadW = SW * 2 * roadMul;
+  const roadColor = isCampus ? 'rgba(90,80,60,0.35)' : 'rgba(55,58,72,0.55)';
+
+  // Horizontal streets
+  for (const sy of streets.h) {
+    const py = Math.floor(sy * NY) * CELL;
+    const rh = Math.max(6, Math.floor(roadW * NY) * CELL);
+    oCtx.fillStyle = roadColor;
+    oCtx.fillRect(0, py - rh / 2, W, rh);
+    if (!isCampus) {
+      // Center dashed line (yellow)
+      oCtx.strokeStyle = isSuburban ? 'rgba(200,180,60,0.4)' : 'rgba(220,200,60,0.5)';
+      oCtx.lineWidth = 1.2;
+      oCtx.setLineDash([5, 7]);
+      oCtx.beginPath(); oCtx.moveTo(0, py); oCtx.lineTo(W, py); oCtx.stroke();
+      oCtx.setLineDash([]);
+    } else {
+      // Campus: dotted path center
+      oCtx.strokeStyle = 'rgba(160,145,100,0.4)'; oCtx.lineWidth = 1;
+      oCtx.setLineDash([2, 6]);
+      oCtx.beginPath(); oCtx.moveTo(0, py); oCtx.lineTo(W, py); oCtx.stroke();
+      oCtx.setLineDash([]);
+    }
+    // Edge lines (skip for campus paths)
+    if (!isCampus) {
+      oCtx.strokeStyle = 'rgba(180,180,190,0.3)'; oCtx.lineWidth = 0.8;
+      oCtx.beginPath(); oCtx.moveTo(0, py - rh / 2); oCtx.lineTo(W, py - rh / 2); oCtx.stroke();
+      oCtx.beginPath(); oCtx.moveTo(0, py + rh / 2); oCtx.lineTo(W, py + rh / 2); oCtx.stroke();
+      const swPx = Math.max(2, rh * 0.18);
+      oCtx.fillStyle = 'rgba(65,68,80,0.4)';
+      oCtx.fillRect(0, py - rh / 2 - swPx, W, swPx);
+      oCtx.fillRect(0, py + rh / 2, W, swPx);
+    }
+  }
+
+  // Vertical streets
+  for (const sx of streets.v) {
+    const px = Math.floor(sx * NX) * CELL;
+    const rw = Math.max(6, Math.floor(roadW * NX) * CELL);
+    oCtx.fillStyle = roadColor;
+    oCtx.fillRect(px - rw / 2, 0, rw, H);
+    if (!isCampus) {
+      oCtx.strokeStyle = isSuburban ? 'rgba(200,180,60,0.4)' : 'rgba(220,200,60,0.5)';
+      oCtx.lineWidth = 1.2;
+      oCtx.setLineDash([5, 7]);
+      oCtx.beginPath(); oCtx.moveTo(px, 0); oCtx.lineTo(px, H); oCtx.stroke();
+      oCtx.setLineDash([]);
+    } else {
+      oCtx.strokeStyle = 'rgba(160,145,100,0.4)'; oCtx.lineWidth = 1;
+      oCtx.setLineDash([2, 6]);
+      oCtx.beginPath(); oCtx.moveTo(px, 0); oCtx.lineTo(px, H); oCtx.stroke();
+      oCtx.setLineDash([]);
+    }
+    if (!isCampus) {
+      oCtx.strokeStyle = 'rgba(180,180,190,0.3)'; oCtx.lineWidth = 0.8;
+      oCtx.beginPath(); oCtx.moveTo(px - rw / 2, 0); oCtx.lineTo(px - rw / 2, H); oCtx.stroke();
+      oCtx.beginPath(); oCtx.moveTo(px + rw / 2, 0); oCtx.lineTo(px + rw / 2, H); oCtx.stroke();
+      const swPx = Math.max(2, rw * 0.18);
+      oCtx.fillStyle = 'rgba(65,68,80,0.4)';
+      oCtx.fillRect(px - rw / 2 - swPx, 0, swPx, H);
+      oCtx.fillRect(px + rw / 2, 0, swPx, H);
+    }
+  }
+
+  // Crosswalks at intersections (not for campus)
+  if (!isCampus) {
+    for (const sy of streets.h) {
+      for (const sx of streets.v) {
+        const ix = Math.floor(sx * NX) * CELL;
+        const iy = Math.floor(sy * NY) * CELL;
+        const rw = Math.max(6, Math.floor(roadW * NX) * CELL);
+        const rh = Math.max(6, Math.floor(roadW * NY) * CELL);
+        oCtx.fillStyle = 'rgba(220,220,230,0.3)';
+        const cwStripe = Math.max(2, rw * 0.12);
+        for (let s = -rw / 2 + 2; s < rw / 2 - 2; s += cwStripe * 2.2) {
+          oCtx.fillRect(ix + s, iy - rh / 2 - 1, cwStripe, 3);
+          oCtx.fillRect(ix + s, iy + rh / 2 - 2, cwStripe, 3);
+        }
+        for (let s = -rh / 2 + 2; s < rh / 2 - 2; s += cwStripe * 2.2) {
+          oCtx.fillRect(ix - rw / 2 - 1, iy + s, 3, cwStripe);
+          oCtx.fillRect(ix + rw / 2 - 2, iy + s, 3, cwStripe);
+        }
+      }
+    }
+  }
+
+  // Campus: draw green quad areas
+  if (isCampus) {
+    const { ox: tox, oy: toy, s: ts } = sceneTx;
+    const quads = [
+      { x: 0.14, y: 0.09, w: 0.06, d: 0.10 },  // north quad
+      { x: 0.30, y: 0.34, w: 0.12, d: 0.04 },  // lecture courtyard
+      { x: 0.30, y: 0.62, w: 0.14, d: 0.16 },  // sports fields
+    ];
+    for (const q of quads) {
+      const qx = (tox + q.x * ts) * NX * CELL, qy = (toy + q.y * ts) * NY * CELL;
+      const qw = q.w * ts * NX * CELL, qh = q.d * ts * NY * CELL;
+      oCtx.fillStyle = 'rgba(30,80,35,0.35)';
+      oCtx.fillRect(qx, qy, qw, qh);
+      oCtx.strokeStyle = 'rgba(50,110,55,0.3)'; oCtx.lineWidth = 0.8;
+      oCtx.strokeRect(qx, qy, qw, qh);
+    }
+  }
+
+  // Suburban: draw driveways / yard hints
+  if (isSuburban) {
+    const rng3 = seededRand(555);
+    for (const b of buildings) {
+      if (b.tall > 0.12) continue;  // only for houses
+      const bx = b.x * NX * CELL, by = b.y * NY * CELL;
+      const bw = b.w * NX * CELL;
+      // Tiny driveway
+      oCtx.fillStyle = 'rgba(70,68,80,0.45)';
+      oCtx.fillRect(bx + bw * 0.3, by + b.d * NY * CELL, bw * 0.25, 4 + rng3() * 4);
+      // Yard outline
+      const yardPad = 3 + rng3() * 3;
+      oCtx.strokeStyle = 'rgba(40,75,40,0.3)'; oCtx.lineWidth = 0.7;
+      oCtx.strokeRect(bx - yardPad, by - yardPad, bw + yardPad * 2, b.d * NY * CELL + yardPad * 2);
+    }
+  }
+
+  // Clip a building rect so it doesn't overlap any road, then convert to pixel coords
+  const clipMargin = 0.022; // half-road width used for clipping
+  function bRect(bx, by, bw, bd) {
+    let left = bx, top = by, right = bx + bw, bottom = by + bd;
+    // Clip against vertical streets
+    for (const sx of streets.v) {
+      const rl = sx - clipMargin, rr = sx + clipMargin;
+      if (left < rl && right > rl && right < rr + 0.01) right = rl;   // building extends into road from left
+      if (right > rr && left < rr && left > rl - 0.01) left = rr;     // building extends into road from right
+    }
+    // Clip against horizontal streets
+    for (const sy of streets.h) {
+      const rt = sy - clipMargin, rb = sy + clipMargin;
+      if (top < rt && bottom > rt && bottom < rb + 0.01) bottom = rt;  // building extends into road from top
+      if (bottom > rb && top < rb && top > rt - 0.01) top = rb;       // building extends into road from bottom
+    }
+    const x0 = Math.floor(left * NX), x1 = Math.floor(right * NX);
+    const y0 = Math.floor(top * NY), y1 = Math.floor(bottom * NY);
+    return { x: x0 * CELL, y: y0 * CELL, w: Math.max(1, (x1 - x0) * CELL), h: Math.max(1, (y1 - y0) * CELL) };
+  }
+
+  // Building shadows
+  const shLen = 8;
+  const shOx = Math.cos(theta + 0.5) * shLen, shOy = Math.sin(theta + 0.5) * shLen;
+  for (const b of buildings) {
+    const r = bRect(b.x, b.y, b.w, b.d);
+    oCtx.fillStyle = `rgba(0,0,0,${(0.25 + b.tall * 0.3).toFixed(2)})`;
+    oCtx.fillRect(r.x + shOx, r.y + shOy, r.w, r.h);
+    if (b.wing) {
+      const wr = bRect(b.wing.x, b.wing.y, b.wing.w, b.wing.d);
+      oCtx.fillRect(wr.x + shOx, wr.y + shOy, wr.w, wr.h);
+    }
+  }
+
+  // Building footprints (opaque — buildings are solid, no particles flow through)
+  const rng2 = seededRand(101);
+  for (const b of buildings) {
+    const r = bRect(b.x, b.y, b.w, b.d);
+    const brightness = 55 + Math.floor(b.tall * 40);
+
+    // Scene-specific building colors — distinct per scene type
+    let fillR = brightness, fillG = brightness, fillB = brightness + 15;         // default: cool blue-gray
+    if (isSuburban) { fillR = brightness + 15; fillG = brightness + 8; fillB = brightness - 5; }   // warm tan
+    else if (isIndustrial) { fillR = brightness - 5; fillG = brightness + 2; fillB = brightness + 8; } // steel blue
+    else if (isCampus) { fillR = brightness + 5; fillG = brightness + 12; fillB = brightness + 15; }   // warm slate
+
+    // Draw main body + wing
+    oCtx.fillStyle = `rgb(${fillR},${fillG},${fillB})`;
+    oCtx.fillRect(r.x, r.y, r.w, r.h);
+    if (b.wing) {
+      const wr = bRect(b.wing.x, b.wing.y, b.wing.w, b.wing.d);
+      oCtx.fillRect(wr.x, wr.y, wr.w, wr.h);
+    }
+
+    // Inner structure lines (skip for small suburban houses)
+    if (!isSuburban || r.w > 12) {
+      oCtx.strokeStyle = `rgba(${brightness + 30},${brightness + 30},${brightness + 38},0.5)`;
+      oCtx.lineWidth = 0.6;
+      if (r.h > 20) {
+        const midY = r.y + r.h * (0.4 + rng2() * 0.2);
+        oCtx.beginPath(); oCtx.moveTo(r.x + 2, midY); oCtx.lineTo(r.x + r.w - 2, midY); oCtx.stroke();
+      }
+      if (r.w > 20) {
+        const midX = r.x + r.w * (0.4 + rng2() * 0.2);
+        oCtx.beginPath(); oCtx.moveTo(midX, r.y + 2); oCtx.lineTo(midX, r.y + r.h - 2); oCtx.stroke();
+      }
+    }
+
+    // Rooftop features (not for tiny suburban houses)
+    if (r.w > 15 && r.h > 15 && !isSuburban) {
+      oCtx.fillStyle = `rgba(${brightness - 10},${brightness - 10},${brightness - 5},0.9)`;
+      const acX = r.x + r.w * 0.15 + rng2() * r.w * 0.2;
+      const acY = r.y + r.h * 0.15 + rng2() * r.h * 0.2;
+      const acS = Math.min(8, r.w * 0.12);
+      oCtx.fillRect(acX, acY, acS, acS * 0.8);
+      oCtx.strokeStyle = `rgba(${brightness + 35},${brightness + 35},${brightness + 40},0.5)`;
+      oCtx.strokeRect(acX, acY, acS, acS * 0.8);
+    }
+
+    // Building outline — main body
+    oCtx.strokeStyle = `rgba(${brightness + 35},${brightness + 35},${brightness + 45},0.8)`;
+    oCtx.lineWidth = 1.2;
+    oCtx.strokeRect(r.x, r.y, r.w, r.h);
+    if (b.wing) {
+      const wr = bRect(b.wing.x, b.wing.y, b.wing.w, b.wing.d);
+      oCtx.strokeRect(wr.x, wr.y, wr.w, wr.h);
+    }
+
+    // Floor count label (skip for tiny suburban houses)
+    if (!(isSuburban && b.tall <= 0.12)) {
+      oCtx.font = '9px -apple-system, sans-serif';
+      oCtx.fillStyle = `rgba(${brightness + 70},${brightness + 70},${brightness + 80},0.85)`;
+      oCtx.textAlign = 'center';
+      oCtx.fillText(`${Math.round(b.tall * 20)}F`, r.x + r.w / 2, r.y + r.h / 2 + 3);
+    }
+  }
+
+  // Trees (semi-transparent so particles show through canopy)
+  for (const t of features.trees) {
+    const tx = t.x * NX * CELL, ty = t.y * NY * CELL;
+    const r = t.size * Math.min(NX, NY) * CELL * 0.5;
+    oCtx.fillStyle = 'rgba(0,0,0,0.2)';
+    oCtx.beginPath(); oCtx.arc(tx + 2, ty + 2, r, 0, Math.PI * 2); oCtx.fill();
+    oCtx.fillStyle = 'rgba(35,100,40,0.7)';
+    oCtx.beginPath(); oCtx.arc(tx, ty, r, 0, Math.PI * 2); oCtx.fill();
+    oCtx.fillStyle = 'rgba(55,140,60,0.5)';
+    oCtx.beginPath(); oCtx.arc(tx - r * 0.2, ty - r * 0.2, r * 0.6, 0, Math.PI * 2); oCtx.fill();
+    oCtx.fillStyle = 'rgba(70,50,30,0.6)';
+    oCtx.beginPath(); oCtx.arc(tx, ty, r * 0.2, 0, Math.PI * 2); oCtx.fill();
+  }
+
+  // Street lights
+  for (const sl of features.streetLights) {
+    const sx = sl.x * NX * CELL, sy = sl.y * NY * CELL;
+    oCtx.fillStyle = 'rgba(140,140,155,0.7)';
+    oCtx.beginPath(); oCtx.arc(sx, sy, 2, 0, Math.PI * 2); oCtx.fill();
+    const glowGrad = oCtx.createRadialGradient(sx, sy, 0, sx, sy, 12);
+    glowGrad.addColorStop(0, 'rgba(255,220,130,0.25)');
+    glowGrad.addColorStop(1, 'rgba(255,220,130,0)');
+    oCtx.fillStyle = glowGrad;
+    oCtx.beginPath(); oCtx.arc(sx, sy, 10, 0, Math.PI * 2); oCtx.fill();
+  }
+
+  oCtx.textAlign = 'left';
+
+  // Wind arrows
+  oCtx.globalAlpha = 0.2; oCtx.strokeStyle = '#a0a0a8'; oCtx.lineWidth = 1;
+  for (let x = 40; x < W - 30; x += 110)
+    for (let y = 40; y < H - 30; y += 90)
+      drawWindArrow(oCtx, x, y, theta, 20);
+  oCtx.globalAlpha = 1;
+  oCtx.font = '10px -apple-system, sans-serif'; oCtx.fillStyle = '#606068';
+  oCtx.fillText(`WIND ${getWindDirLabel()}  (Top-Down · Real-time NS)`, 16, 12);
+}
+
+function drawOverlay() {
+  if (viewMode === 'side') drawOverlaySide(); else drawOverlayTop();
+}
+
+function updateInfo() {
+  if (viewMode === 'side') {
+    infoEl.innerHTML = '<strong>Side View — Real-time Navier-Stokes:</strong><br>' +
+      'Vortices emerge naturally from building geometry. Watch for oscillating wake ' +
+      'recirculation, rooftop separation, and base vortices.';
+  } else {
+    infoEl.innerHTML = '<strong>Top-Down — Real-time Navier-Stokes:</strong><br>' +
+      'Wind accelerates around corners. Vortex shedding creates alternating eddies ' +
+      'that pulse and shift in real time.';
+  }
+}
+
+// ==========================
+// ANIMATION
+// ==========================
+let animId = 0;   // rAF handle — used to cancel stale loops
+let frameCount = 0;
+
+function frame() {
+  // Warm-up: extra substeps for first ~1 second to develop wake quickly
+  const substeps = frameCount < 30 ? 2 : 1;
+  for (let s = 0; s < substeps; s++) fluidStep(1.0);
+
+  fadeTrails();
+  stepAndDrawParticles();
+  frameCount++;
+
+  if (frameCount === 1) {
+    statusEl.style.display = 'none';
+    drawOverlay();
+  }
+
+  animId = requestAnimationFrame(frame);
+}
+
+function startAnimation() {
+  // Cancel any existing animation loop before starting a new one
+  if (animId) { cancelAnimationFrame(animId); animId = 0; }
+  frameCount = 0;
+  initParticles();
+  tCtx.fillStyle = '#0d0d0f';
+  tCtx.fillRect(0, 0, trailCanvas.width, trailCanvas.height);
+  drawOverlay();
+  updateInfo();
+  statusEl.style.display = 'block';
+  animId = requestAnimationFrame(frame);
+}
+
+function resetSim() {
+  sizeCanvases();
+  allocFields();
+  applySceneTransform();
+  if (viewMode === 'side') stampSolidSide(); else stampSolidTop();
+  initFlowField();
+  startAnimation();
+}
+
+// ==========================
+// UI
+// ==========================
+function showSceneButtons() {
+  document.getElementById('side-scenes').style.display = viewMode === 'side' ? 'flex' : 'none';
+  document.getElementById('top-scenes').style.display = viewMode === 'top' ? 'flex' : 'none';
+  // Side view: show simple L/R toggle. Top-down: show full direction slider.
+  document.getElementById('dirControl').style.display = viewMode === 'top' ? 'flex' : 'none';
+  document.getElementById('sideWindToggle').style.display = viewMode === 'side' ? 'flex' : 'none';
+}
+function updateSideWindBtn() {
+  const windRight = Math.cos(getWindDirRad()) >= 0;
+  document.getElementById('btnWindDir').textContent = windRight ? 'Wind →' : '← Wind';
+}
+
+document.getElementById('btnSide').addEventListener('click', () => {
+  if (viewMode === 'side') return;
+  viewMode = 'side';
+  document.getElementById('btnSide').classList.add('active');
+  document.getElementById('btnTop').classList.remove('active');
+  // Restore last side scene; snap direction to 0° or 180°
+  currentScene = currentSideScene;
+  if (Math.cos(getWindDirRad()) >= 0) windDirDeg = 0; else windDirDeg = 180;
+  document.getElementById('windDir').value = windDirDeg;
+  document.getElementById('dirVal').textContent = windDirDeg + '°';
+  updateSideWindBtn();
+  drawCompass();
+  showSceneButtons();
+  resetSim();
+});
+document.getElementById('btnTop').addEventListener('click', () => {
+  if (viewMode === 'top') return;
+  viewMode = 'top';
+  document.getElementById('btnTop').classList.add('active');
+  document.getElementById('btnSide').classList.remove('active');
+  // Restore last top scene
+  currentScene = currentTopScene;
+  showSceneButtons();
+  resetSim();
+});
+
+document.getElementById('windSpeed').addEventListener('input', () => {
+  document.getElementById('windVal').textContent = document.getElementById('windSpeed').value;
+});
+
+document.getElementById('windDir').addEventListener('input', () => {
+  windDirDeg = parseInt(document.getElementById('windDir').value);
+  document.getElementById('dirVal').textContent = windDirDeg + '°';
+  drawCompass();
+  drawOverlay();
+});
+
+// Side-view wind direction toggle (left ↔ right)
+document.getElementById('btnWindDir').addEventListener('click', () => {
+  windDirDeg = (Math.cos(getWindDirRad()) >= 0) ? 180 : 0;
+  document.getElementById('windDir').value = windDirDeg;
+  document.getElementById('dirVal').textContent = windDirDeg + '°';
+  updateSideWindBtn();
+  drawCompass();
+  resetSim();
+});
+
+// Side-view scene buttons
+document.querySelectorAll('#side-scenes button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#side-scenes button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentScene = btn.dataset.scene;
+    currentSideScene = currentScene;
+    resetSim();
+  });
+});
+
+// Top-down scene buttons
+document.querySelectorAll('#top-scenes button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#top-scenes button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentScene = btn.dataset.scene;
+    currentTopScene = currentScene;
+    resetSim();
+  });
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => { resetSim(); });
+window.addEventListener('resize', () => { resetSim(); });
+
+// --- GO ---
+drawCompass();
+updateSideWindBtn();
+showSceneButtons();
+resetSim();
+</script>
+</body>
+</html>
